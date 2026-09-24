@@ -151,11 +151,11 @@ def _fetch_tasks(chat_id: int, scope: str | None) -> list[dict]:
         .eq("is_completed", False)
     )
 
-    if scope is None:
-        query = query.order("created_at")
-    else:
+    if scope is not None:
         start, end = _date_range_for_scope(scope, datetime.now(WIB))
-        query = query.gte("deadline", start).lte("deadline", end).order("deadline")
+        query = query.gte("deadline", start).lte("deadline", end)
+
+    query = query.order("deadline", nullsfirst=False)
 
     return query.execute().data
 
@@ -281,15 +281,8 @@ async def handle_calendar_callback(call):
 
 
 async def _find_task_by_number(chat_id: int, nomor_tugas: int):
-    response = (
-        supabase.table("study_tasks")
-        .select("id, created_at, task_name")
-        .eq("chat_id", chat_id)
-        .eq("is_completed", False)
-        .order("created_at")
-        .execute()
-    )
-    daftar_tugas = response.data
+    # Urutan harus sama persis dengan yang ditampilkan /list, supaya nomornya cocok.
+    daftar_tugas = _fetch_tasks(chat_id, None)
 
     if nomor_tugas < 1 or nomor_tugas > len(daftar_tugas):
         return None
