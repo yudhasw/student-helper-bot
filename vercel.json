@@ -4,8 +4,5 @@
     "main.py": {
       "maxDuration": 30
     }
-  },
-  "crons": [
-    { "path": "/internal/tick", "schedule": "0 0 * * *" }
-  ]
+  }
 }

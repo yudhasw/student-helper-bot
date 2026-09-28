@@ -54,6 +54,12 @@ async def lifespan(app: FastAPI):
             minute=DIGEST_MINUTE_WIB,
             id="daily_digest",
         )
+        scheduler.add_job(
+            send_due_reminders,
+            "interval",
+            minutes=15,
+            id="due_reminders",
+        )
         scheduler.start()
         logger.info(
             "Local scheduler aktif: digest pagi jam %02d:%02d WIB",
@@ -106,6 +112,32 @@ def build_calendar_markup(year: int, month: int) -> InlineKeyboardMarkup:
         markup.row(*row)
 
     markup.row(InlineKeyboardButton("Tanpa deadline", callback_data="cal|skip"))
+    return markup
+
+
+REMINDER_PRESETS = [
+    ("1 jam sebelum", 1),
+    ("3 jam sebelum", 3),
+    ("1 hari sebelum", 24),
+]
+
+
+def build_reminder_markup() -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=1)
+    for label, hours in REMINDER_PRESETS:
+        markup.add(InlineKeyboardButton(label, callback_data=f"rem|preset|{hours}"))
+    markup.add(InlineKeyboardButton("Jam custom", callback_data="rem|customhour"))
+    markup.add(InlineKeyboardButton("Tanpa reminder khusus", callback_data="rem|none"))
+    return markup
+
+
+def build_hour_markup() -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=6)
+    buttons = [
+        InlineKeyboardButton(f"{h:02d}", callback_data=f"rem|hour|{h}") for h in range(24)
+    ]
+    for i in range(0, 24, 6):
+        markup.row(*buttons[i : i + 6])
     return markup
 
 
@@ -196,10 +228,54 @@ async def handle_list(message):
     await bot.reply_to(message, _format_task_list(daftar_tugas, scope))
 
 
-def _save_task_text(task_name: str, deadline_iso: str | None) -> str:
+def _save_task_text(
+    task_name: str, deadline_iso: str | None, remind_at_iso: str | None = None
+) -> str:
     if deadline_iso:
-        return f"Sukses! Tugas '{task_name}' dengan deadline {deadline_iso} berhasil disimpan."
-    return f"Sukses! Tugas '{task_name}' (tanpa deadline) berhasil disimpan."
+        text = f"Sukses! Tugas '{task_name}' dengan deadline {deadline_iso} berhasil disimpan."
+    else:
+        text = f"Sukses! Tugas '{task_name}' (tanpa deadline) berhasil disimpan."
+
+    if remind_at_iso:
+        remind_wib = datetime.fromisoformat(remind_at_iso).astimezone(WIB)
+        text += f"\n⏰ Reminder diatur: {remind_wib.strftime('%Y-%m-%d %H:%M')} WIB"
+
+    return text
+
+
+def _compute_remind_at_preset(deadline_date: str, offset_hours: int) -> str:
+    end_of_day = datetime.strptime(deadline_date, "%Y-%m-%d").replace(
+        hour=23, minute=59, tzinfo=WIB
+    )
+    remind_at = end_of_day - timedelta(hours=offset_hours)
+    return remind_at.isoformat()
+
+
+def _compute_remind_at_hour(deadline_date: str, hour: int) -> str:
+    remind_at = datetime.strptime(deadline_date, "%Y-%m-%d").replace(hour=hour, tzinfo=WIB)
+    return remind_at.isoformat()
+
+
+def _finalize_task(
+    chat_id: int, deadline_iso: str | None, remind_at_iso: str | None = None
+) -> str | None:
+    pending = (
+        supabase.table("pending_tasks").select("task_name").eq("chat_id", chat_id).execute()
+    )
+    if not pending.data:
+        return None
+
+    task_name = pending.data[0]["task_name"]
+    supabase.table("study_tasks").insert(
+        {
+            "chat_id": chat_id,
+            "task_name": task_name,
+            "deadline": deadline_iso,
+            "remind_at": remind_at_iso,
+        }
+    ).execute()
+    supabase.table("pending_tasks").delete().eq("chat_id", chat_id).execute()
+    return task_name
 
 
 @bot.message_handler(commands=["task"])
@@ -259,23 +335,79 @@ async def handle_calendar_callback(call):
         await bot.answer_callback_query(call.id)
         return
 
+    if action == "skip":
+        task_name = _finalize_task(chat_id, None)
+        if task_name is None:
+            await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
+            return
+        await bot.edit_message_text(
+            _save_task_text(task_name, None), chat_id, call.message.message_id
+        )
+        await bot.answer_callback_query(call.id)
+        return
+
+    # action == "pick": simpan tanggal ke pending, lanjut ke pemilihan reminder.
+    deadline_iso = rest[0]
+    result = (
+        supabase.table("pending_tasks")
+        .update({"deadline": deadline_iso})
+        .eq("chat_id", chat_id)
+        .execute()
+    )
+    if not result.data:
+        await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
+        return
+
+    await bot.edit_message_text(
+        f"Deadline: {deadline_iso}. Kapan mau diingatkan?",
+        chat_id,
+        call.message.message_id,
+        reply_markup=build_reminder_markup(),
+    )
+    await bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rem|"))
+async def handle_reminder_callback(call):
+    _, action, *rest = call.data.split("|")
+    chat_id = call.message.chat.id
+
+    if action == "customhour":
+        await bot.edit_message_reply_markup(
+            chat_id, call.message.message_id, reply_markup=build_hour_markup()
+        )
+        await bot.answer_callback_query(call.id)
+        return
+
     pending = (
-        supabase.table("pending_tasks").select("task_name").eq("chat_id", chat_id).execute()
+        supabase.table("pending_tasks")
+        .select("task_name, deadline")
+        .eq("chat_id", chat_id)
+        .execute()
     )
     if not pending.data:
         await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
         return
 
-    task_name = pending.data[0]["task_name"]
-    deadline_iso = None if action == "skip" else rest[0]
+    deadline_iso = pending.data[0]["deadline"]
 
-    supabase.table("study_tasks").insert(
-        {"chat_id": chat_id, "task_name": task_name, "deadline": deadline_iso}
-    ).execute()
-    supabase.table("pending_tasks").delete().eq("chat_id", chat_id).execute()
+    if action == "none":
+        remind_at_iso = None
+    elif action == "preset":
+        remind_at_iso = _compute_remind_at_preset(deadline_iso, int(rest[0]))
+    elif action == "hour":
+        remind_at_iso = _compute_remind_at_hour(deadline_iso, int(rest[0]))
+    else:
+        await bot.answer_callback_query(call.id)
+        return
+
+    task_name = _finalize_task(chat_id, deadline_iso, remind_at_iso)
+    if task_name is None:
+        await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
+        return
 
     await bot.edit_message_text(
-        _save_task_text(task_name, deadline_iso), chat_id, call.message.message_id
+        _save_task_text(task_name, deadline_iso, remind_at_iso), chat_id, call.message.message_id
     )
     await bot.answer_callback_query(call.id)
 
@@ -386,14 +518,54 @@ async def send_daily_digest() -> int:
     return len(tugas_per_chat)
 
 
+async def send_due_reminders() -> int:
+    """Kirim reminder untuk tugas yang remind_at-nya sudah lewat dan belum dikirim."""
+    now_utc = datetime.now(ZoneInfo("UTC")).isoformat()
+    response = (
+        supabase.table("study_tasks")
+        .select("id, chat_id, task_name, deadline")
+        .lte("remind_at", now_utc)
+        .eq("reminder_sent", False)
+        .eq("is_completed", False)
+        .execute()
+    )
+
+    count = 0
+    for tugas in response.data:
+        deadline_text = f" (deadline: {tugas['deadline']})" if tugas["deadline"] else ""
+        try:
+            await bot.send_message(
+                tugas["chat_id"], f"⏰ Pengingat: '{tugas['task_name']}'{deadline_text}"
+            )
+            supabase.table("study_tasks").update({"reminder_sent": True}).eq(
+                "id", tugas["id"]
+            ).execute()
+            count += 1
+        except Exception:
+            logger.exception("Gagal mengirim reminder untuk task id=%s", tugas["id"])
+
+    logger.info("Reminder terkirim ke %d tugas", count)
+    return count
+
+
 @app.api_route("/internal/tick", methods=["GET", "POST"])
 async def tick(authorization: str | None = Header(default=None)):
-    """Dipanggil oleh Vercel Cron / cron eksternal untuk mengirim digest harian."""
+    """Dipanggil berkala (mis. GitHub Actions tiap 15 menit) untuk digest & reminder."""
     if authorization != f"Bearer {CRON_SECRET}":
         raise HTTPException(status_code=403, detail="invalid cron secret")
 
-    notified_chats = await send_daily_digest()
-    return {"checked": True, "notified_chats": notified_chats}
+    now = datetime.now(WIB)
+    notified_chats = 0
+    if now.hour == DIGEST_HOUR_WIB and now.minute < 15:
+        notified_chats = await send_daily_digest()
+
+    reminders_sent = await send_due_reminders()
+
+    return {
+        "checked": True,
+        "notified_chats": notified_chats,
+        "reminders_sent": reminders_sent,
+    }
 
 
 def countTugas(chat_id):
