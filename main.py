@@ -134,10 +134,24 @@ def build_reminder_markup() -> InlineKeyboardMarkup:
 def build_hour_markup() -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=6)
     buttons = [
-        InlineKeyboardButton(f"{h:02d}", callback_data=f"rem|hour|{h}") for h in range(24)
+        InlineKeyboardButton(f"{h:02d}", callback_data=f"rem|pickhour|{h}") for h in range(24)
     ]
     for i in range(0, 24, 6):
         markup.row(*buttons[i : i + 6])
+    return markup
+
+
+MINUTE_OPTIONS = [0, 15, 30, 45]
+
+
+def build_minute_markup(hour: int) -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=4)
+    markup.row(
+        *[
+            InlineKeyboardButton(f"{hour:02d}:{m:02d}", callback_data=f"rem|hour|{hour}|{m}")
+            for m in MINUTE_OPTIONS
+        ]
+    )
     return markup
 
 
@@ -251,8 +265,10 @@ def _compute_remind_at_preset(deadline_date: str, offset_hours: int) -> str:
     return remind_at.isoformat()
 
 
-def _compute_remind_at_hour(deadline_date: str, hour: int) -> str:
-    remind_at = datetime.strptime(deadline_date, "%Y-%m-%d").replace(hour=hour, tzinfo=WIB)
+def _compute_remind_at_hour(deadline_date: str, hour: int, minute: int) -> str:
+    remind_at = datetime.strptime(deadline_date, "%Y-%m-%d").replace(
+        hour=hour, minute=minute, tzinfo=WIB
+    )
     return remind_at.isoformat()
 
 
@@ -379,6 +395,14 @@ async def handle_reminder_callback(call):
         await bot.answer_callback_query(call.id)
         return
 
+    if action == "pickhour":
+        hour = int(rest[0])
+        await bot.edit_message_reply_markup(
+            chat_id, call.message.message_id, reply_markup=build_minute_markup(hour)
+        )
+        await bot.answer_callback_query(call.id)
+        return
+
     pending = (
         supabase.table("pending_tasks")
         .select("task_name, deadline")
@@ -396,7 +420,7 @@ async def handle_reminder_callback(call):
     elif action == "preset":
         remind_at_iso = _compute_remind_at_preset(deadline_iso, int(rest[0]))
     elif action == "hour":
-        remind_at_iso = _compute_remind_at_hour(deadline_iso, int(rest[0]))
+        remind_at_iso = _compute_remind_at_hour(deadline_iso, int(rest[0]), int(rest[1]))
     else:
         await bot.answer_callback_query(call.id)
         return
