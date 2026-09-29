@@ -2,6 +2,7 @@ import calendar as calendar_module
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import telebot
@@ -24,14 +25,19 @@ from config import (
 
 logger = logging.getLogger("student_helper.scheduler")
 
+with open(Path(__file__).parent / "VERSION") as _f:
+    APP_VERSION = _f.read().strip()
+
 BOT_COMMANDS = [
     BotCommand("start", "Mulai pakai bot"),
     BotCommand("help", "Lihat daftar perintah"),
     BotCommand("task", "Tambah tugas: /task <nama> (pilih tanggal di kalender)"),
     BotCommand("list", "Lihat tugas: /list, /list today, /list week, /list month"),
     BotCommand("today", "Lihat tugas dengan deadline hari ini"),
+    BotCommand("overdue", "Lihat tugas yang sudah lewat deadline"),
     BotCommand("done", "Tandai tugas selesai: /done <nomor>"),
     BotCommand("del", "Hapus tugas: /del <nomor>"),
+    BotCommand("versi", "Lihat versi bot saat ini"),
 ]
 
 HELP_TEXT = "Daftar perintah:\n" + "\n".join(
@@ -165,11 +171,17 @@ async def handle_start(message):
     await bot.reply_to(message, HELP_TEXT)
 
 
+@bot.message_handler(commands=["versi"])
+async def handle_versi(message):
+    await bot.reply_to(message, f"Versi bot: {APP_VERSION}")
+
+
 SCOPE_JUDUL = {
     None: "tugas yang belum selesai",
     "today": "tugas hari ini",
     "week": "tugas minggu ini",
     "month": "tugas bulan ini",
+    "overdue": "tugas yang sudah lewat deadline",
 }
 
 
@@ -197,7 +209,9 @@ def _fetch_tasks(chat_id: int, scope: str | None) -> list[dict]:
         .eq("is_completed", False)
     )
 
-    if scope is not None:
+    if scope == "overdue":
+        query = query.lt("deadline", today_str()).not_.is_("deadline", "null")
+    elif scope is not None:
         start, end = _date_range_for_scope(scope, datetime.now(WIB))
         query = query.gte("deadline", start).lte("deadline", end)
 
@@ -206,17 +220,22 @@ def _fetch_tasks(chat_id: int, scope: str | None) -> list[dict]:
     return query.execute().data
 
 
+def _is_overdue(deadline: str | None) -> bool:
+    return deadline is not None and deadline < today_str()
+
+
 def _format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
     if not daftar_tugas:
         return f"Bebas tugas! Tidak ada {SCOPE_JUDUL[scope]}."
 
     reply_text = f"Ini {SCOPE_JUDUL[scope]}:\n"
     for i, tugas in enumerate(daftar_tugas, start=1):
+        label = "Overdue: " if scope != "overdue" and _is_overdue(tugas["deadline"]) else ""
         if scope == "today":
-            reply_text += f"{i}. {tugas['task_name']}\n"
+            reply_text += f"{i}. {label}{tugas['task_name']}\n"
         else:
             deadline = tugas["deadline"] or "-"
-            reply_text += f"{i}. {tugas['task_name']} - {deadline}\n"
+            reply_text += f"{i}. {label}{tugas['task_name']} - {deadline}\n"
 
     return reply_text
 
@@ -225,6 +244,12 @@ def _format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
 async def handle_today(message):
     daftar_tugas = _fetch_tasks(message.chat.id, "today")
     await bot.reply_to(message, _format_task_list(daftar_tugas, "today"))
+
+
+@bot.message_handler(commands=["overdue"])
+async def handle_overdue(message):
+    daftar_tugas = _fetch_tasks(message.chat.id, "overdue")
+    await bot.reply_to(message, _format_task_list(daftar_tugas, "overdue"))
 
 
 @bot.message_handler(commands=["list"])
