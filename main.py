@@ -132,29 +132,36 @@ def build_reminder_markup() -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=1)
     for label, hours in REMINDER_PRESETS:
         markup.add(InlineKeyboardButton(label, callback_data=f"rem|preset|{hours}"))
-    markup.add(InlineKeyboardButton("Jam custom", callback_data="rem|customhour"))
+    markup.add(InlineKeyboardButton("Durasi custom sebelum deadline", callback_data="rem|customoffset"))
     markup.add(InlineKeyboardButton("Tanpa reminder khusus", callback_data="rem|none"))
     return markup
 
 
-def build_hour_markup() -> InlineKeyboardMarkup:
+def build_time_markup(prefix: str) -> InlineKeyboardMarkup:
+    """Grid jam 00-23. `prefix` menentukan tujuan callback (mis. 'dtime' atau 'rem')."""
     markup = InlineKeyboardMarkup(row_width=6)
     buttons = [
-        InlineKeyboardButton(f"{h:02d}", callback_data=f"rem|pickhour|{h}") for h in range(24)
+        InlineKeyboardButton(f"{h:02d}", callback_data=f"{prefix}|pickhour|{h}") for h in range(24)
     ]
     for i in range(0, 24, 6):
         markup.row(*buttons[i : i + 6])
     return markup
 
 
+def build_deadline_time_markup() -> InlineKeyboardMarkup:
+    markup = build_time_markup("dtime")
+    markup.row(InlineKeyboardButton("Tidak tahu jam pastinya", callback_data="dtime|skip"))
+    return markup
+
+
 MINUTE_OPTIONS = [0, 15, 30, 45]
 
 
-def build_minute_markup(hour: int) -> InlineKeyboardMarkup:
+def build_minute_markup(prefix: str, hour: int) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=4)
     markup.row(
         *[
-            InlineKeyboardButton(f"{hour:02d}:{m:02d}", callback_data=f"rem|hour|{hour}|{m}")
+            InlineKeyboardButton(f"{hour:02d}:{m:02d}", callback_data=f"{prefix}|hour|{hour}|{m}")
             for m in MINUTE_OPTIONS
         ]
     )
@@ -235,6 +242,8 @@ def _format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
             reply_text += f"{i}. {label}{tugas['task_name']}\n"
         else:
             deadline = tugas["deadline"] or "-"
+            if tugas.get("deadline_time"):
+                deadline = f"{deadline} {tugas['deadline_time']}"
             reply_text += f"{i}. {label}{tugas['task_name']} - {deadline}\n"
 
     return reply_text
@@ -268,10 +277,14 @@ async def handle_list(message):
 
 
 def _save_task_text(
-    task_name: str, deadline_iso: str | None, remind_at_iso: str | None = None
+    task_name: str,
+    deadline_iso: str | None,
+    deadline_time: str | None = None,
+    remind_at_iso: str | None = None,
 ) -> str:
     if deadline_iso:
-        text = f"Sukses! Tugas '{task_name}' dengan deadline {deadline_iso} berhasil disimpan."
+        deadline_display = f"{deadline_iso} {deadline_time}" if deadline_time else deadline_iso
+        text = f"Sukses! Tugas '{task_name}' dengan deadline {deadline_display} berhasil disimpan."
     else:
         text = f"Sukses! Tugas '{task_name}' (tanpa deadline) berhasil disimpan."
 
@@ -282,23 +295,27 @@ def _save_task_text(
     return text
 
 
-def _compute_remind_at_preset(deadline_date: str, offset_hours: int) -> str:
-    end_of_day = datetime.strptime(deadline_date, "%Y-%m-%d").replace(
-        hour=23, minute=59, tzinfo=WIB
-    )
-    remind_at = end_of_day - timedelta(hours=offset_hours)
-    return remind_at.isoformat()
-
-
-def _compute_remind_at_hour(deadline_date: str, hour: int, minute: int) -> str:
-    remind_at = datetime.strptime(deadline_date, "%Y-%m-%d").replace(
+def _deadline_datetime(deadline_date: str, deadline_time: str | None) -> datetime:
+    # Kalau jam deadline tidak diketahui, anggap akhir hari (23:59) sebagai fallback.
+    hour, minute = map(int, (deadline_time or "23:59").split(":"))
+    return datetime.strptime(deadline_date, "%Y-%m-%d").replace(
         hour=hour, minute=minute, tzinfo=WIB
     )
+
+
+def _compute_remind_at_offset(
+    deadline_date: str, deadline_time: str | None, hours_before: int, minutes_before: int
+) -> str:
+    deadline_dt = _deadline_datetime(deadline_date, deadline_time)
+    remind_at = deadline_dt - timedelta(hours=hours_before, minutes=minutes_before)
     return remind_at.isoformat()
 
 
 def _finalize_task(
-    chat_id: int, deadline_iso: str | None, remind_at_iso: str | None = None
+    chat_id: int,
+    deadline_iso: str | None,
+    deadline_time: str | None = None,
+    remind_at_iso: str | None = None,
 ) -> str | None:
     pending = (
         supabase.table("pending_tasks").select("task_name").eq("chat_id", chat_id).execute()
@@ -312,6 +329,7 @@ def _finalize_task(
             "chat_id": chat_id,
             "task_name": task_name,
             "deadline": deadline_iso,
+            "deadline_time": deadline_time,
             "remind_at": remind_at_iso,
         }
     ).execute()
@@ -387,7 +405,7 @@ async def handle_calendar_callback(call):
         await bot.answer_callback_query(call.id)
         return
 
-    # action == "pick": simpan tanggal ke pending, lanjut ke pemilihan reminder.
+    # action == "pick": simpan tanggal ke pending, lanjut ke pemilihan jam deadline.
     deadline_iso = rest[0]
     result = (
         supabase.table("pending_tasks")
@@ -400,7 +418,49 @@ async def handle_calendar_callback(call):
         return
 
     await bot.edit_message_text(
-        f"Deadline: {deadline_iso}. Kapan mau diingatkan?",
+        f"Deadline: {deadline_iso}. Jam berapa deadline-nya?",
+        chat_id,
+        call.message.message_id,
+        reply_markup=build_deadline_time_markup(),
+    )
+    await bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dtime|"))
+async def handle_deadline_time_callback(call):
+    _, action, *rest = call.data.split("|")
+    chat_id = call.message.chat.id
+
+    if action == "pickhour":
+        hour = int(rest[0])
+        await bot.edit_message_reply_markup(
+            chat_id, call.message.message_id, reply_markup=build_minute_markup("dtime", hour)
+        )
+        await bot.answer_callback_query(call.id)
+        return
+
+    if action == "hour":
+        deadline_time = f"{int(rest[0]):02d}:{int(rest[1]):02d}"
+    elif action == "skip":
+        deadline_time = None
+    else:
+        await bot.answer_callback_query(call.id)
+        return
+
+    result = (
+        supabase.table("pending_tasks")
+        .update({"deadline_time": deadline_time})
+        .eq("chat_id", chat_id)
+        .execute()
+    )
+    if not result.data:
+        await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
+        return
+
+    deadline_iso = result.data[0]["deadline"]
+    deadline_display = f"{deadline_iso} {deadline_time}" if deadline_time else deadline_iso
+    await bot.edit_message_text(
+        f"Deadline: {deadline_display}. Mau diingatkan berapa lama sebelumnya?",
         chat_id,
         call.message.message_id,
         reply_markup=build_reminder_markup(),
@@ -413,9 +473,9 @@ async def handle_reminder_callback(call):
     _, action, *rest = call.data.split("|")
     chat_id = call.message.chat.id
 
-    if action == "customhour":
+    if action == "customoffset":
         await bot.edit_message_reply_markup(
-            chat_id, call.message.message_id, reply_markup=build_hour_markup()
+            chat_id, call.message.message_id, reply_markup=build_time_markup("rem")
         )
         await bot.answer_callback_query(call.id)
         return
@@ -423,14 +483,14 @@ async def handle_reminder_callback(call):
     if action == "pickhour":
         hour = int(rest[0])
         await bot.edit_message_reply_markup(
-            chat_id, call.message.message_id, reply_markup=build_minute_markup(hour)
+            chat_id, call.message.message_id, reply_markup=build_minute_markup("rem", hour)
         )
         await bot.answer_callback_query(call.id)
         return
 
     pending = (
         supabase.table("pending_tasks")
-        .select("task_name, deadline")
+        .select("task_name, deadline, deadline_time")
         .eq("chat_id", chat_id)
         .execute()
     )
@@ -439,24 +499,29 @@ async def handle_reminder_callback(call):
         return
 
     deadline_iso = pending.data[0]["deadline"]
+    deadline_time = pending.data[0]["deadline_time"]
 
     if action == "none":
         remind_at_iso = None
     elif action == "preset":
-        remind_at_iso = _compute_remind_at_preset(deadline_iso, int(rest[0]))
+        remind_at_iso = _compute_remind_at_offset(deadline_iso, deadline_time, int(rest[0]), 0)
     elif action == "hour":
-        remind_at_iso = _compute_remind_at_hour(deadline_iso, int(rest[0]), int(rest[1]))
+        remind_at_iso = _compute_remind_at_offset(
+            deadline_iso, deadline_time, int(rest[0]), int(rest[1])
+        )
     else:
         await bot.answer_callback_query(call.id)
         return
 
-    task_name = _finalize_task(chat_id, deadline_iso, remind_at_iso)
+    task_name = _finalize_task(chat_id, deadline_iso, deadline_time, remind_at_iso)
     if task_name is None:
         await bot.answer_callback_query(call.id, "Sesi kedaluwarsa, kirim /task lagi.")
         return
 
     await bot.edit_message_text(
-        _save_task_text(task_name, deadline_iso, remind_at_iso), chat_id, call.message.message_id
+        _save_task_text(task_name, deadline_iso, deadline_time, remind_at_iso),
+        chat_id,
+        call.message.message_id,
     )
     await bot.answer_callback_query(call.id)
 
@@ -572,7 +637,7 @@ async def send_due_reminders() -> int:
     now_utc = datetime.now(ZoneInfo("UTC")).isoformat()
     response = (
         supabase.table("study_tasks")
-        .select("id, chat_id, task_name, deadline")
+        .select("id, chat_id, task_name, deadline, deadline_time")
         .lte("remind_at", now_utc)
         .eq("reminder_sent", False)
         .eq("is_completed", False)
@@ -581,7 +646,11 @@ async def send_due_reminders() -> int:
 
     count = 0
     for tugas in response.data:
-        deadline_text = f" (deadline: {tugas['deadline']})" if tugas["deadline"] else ""
+        if tugas["deadline"]:
+            waktu = f" {tugas['deadline_time']}" if tugas.get("deadline_time") else ""
+            deadline_text = f" (deadline: {tugas['deadline']}{waktu})"
+        else:
+            deadline_text = ""
         try:
             await bot.send_message(
                 tugas["chat_id"], f"⏰ Pengingat: '{tugas['task_name']}'{deadline_text}"
