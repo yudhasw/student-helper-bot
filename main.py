@@ -35,8 +35,8 @@ BOT_COMMANDS = [
     BotCommand("list", "Lihat tugas: /list, /list today, /list week, /list month"),
     BotCommand("today", "Lihat tugas dengan deadline hari ini"),
     BotCommand("overdue", "Lihat tugas yang sudah lewat deadline"),
-    BotCommand("done", "Tandai tugas selesai: /done <nomor>"),
-    BotCommand("del", "Hapus tugas: /del <nomor>"),
+    BotCommand("done", "Tandai tugas selesai (pilih dari daftar)"),
+    BotCommand("del", "Hapus tugas (pilih dari daftar)"),
     BotCommand("versi", "Lihat versi bot saat ini"),
 ]
 
@@ -231,22 +231,44 @@ def _is_overdue(deadline: str | None) -> bool:
     return deadline is not None and deadline < today_str()
 
 
+def _format_deadline_short(deadline: str | None, deadline_time: str | None) -> str:
+    if not deadline:
+        return "-"
+    short = deadline[5:]  # "YYYY-MM-DD" -> "MM-DD"
+    return f"{short} {deadline_time}" if deadline_time else short
+
+
+def _format_task_line(i: int, tugas: dict, scope: str | None) -> str:
+    if scope == "today":
+        return f"{i}. {tugas['task_name']}"
+    deadline = _format_deadline_short(tugas["deadline"], tugas.get("deadline_time"))
+    return f"{i}. {tugas['task_name']} - {deadline}"
+
+
 def _format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
     if not daftar_tugas:
         return f"Bebas tugas! Tidak ada {SCOPE_JUDUL[scope]}."
 
-    reply_text = f"Ini {SCOPE_JUDUL[scope]}:\n"
-    for i, tugas in enumerate(daftar_tugas, start=1):
-        label = "Overdue: " if scope != "overdue" and _is_overdue(tugas["deadline"]) else ""
-        if scope == "today":
-            reply_text += f"{i}. {label}{tugas['task_name']}\n"
-        else:
-            deadline = tugas["deadline"] or "-"
-            if tugas.get("deadline_time"):
-                deadline = f"{deadline} {tugas['deadline_time']}"
-            reply_text += f"{i}. {label}{tugas['task_name']} - {deadline}\n"
+    if scope == "overdue":
+        lines = [f"Ini {SCOPE_JUDUL[scope]}:"]
+        lines += [_format_task_line(i, t, scope) for i, t in enumerate(daftar_tugas, start=1)]
+        return "\n".join(lines)
 
-    return reply_text
+    non_overdue = [t for t in daftar_tugas if not _is_overdue(t["deadline"])]
+    overdue = [t for t in daftar_tugas if _is_overdue(t["deadline"])]
+
+    lines: list[str] = []
+    if non_overdue:
+        lines.append(f"Ini {SCOPE_JUDUL[scope]}:")
+        lines += [_format_task_line(i, t, scope) for i, t in enumerate(non_overdue, start=1)]
+
+    if overdue:
+        if lines:
+            lines.append("")
+        lines.append("⚠️ Overdue:")
+        lines += [_format_task_line(i, t, scope) for i, t in enumerate(overdue, start=1)]
+
+    return "\n".join(lines)
 
 
 @bot.message_handler(commands=["today"])
@@ -526,64 +548,127 @@ async def handle_reminder_callback(call):
     await bot.answer_callback_query(call.id)
 
 
-async def _find_task_by_number(chat_id: int, nomor_tugas: int):
-    # Urutan harus sama persis dengan yang ditampilkan /list, supaya nomornya cocok.
-    daftar_tugas = _fetch_tasks(chat_id, None)
+def _short_task_label(tugas: dict) -> str:
+    name = tugas["task_name"]
+    deadline = tugas["deadline"]
+    if deadline:
+        label = f"{name} ({deadline[5:]}{' ' + tugas['deadline_time'] if tugas.get('deadline_time') else ''})"
+    else:
+        label = name
+    return label if len(label) <= 60 else label[:57] + "..."
 
-    if nomor_tugas < 1 or nomor_tugas > len(daftar_tugas):
-        return None
 
-    return daftar_tugas[nomor_tugas - 1]
+def build_task_picker_markup(daftar_tugas: list[dict], prefix: str) -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=1)
+    for tugas in daftar_tugas:
+        markup.add(
+            InlineKeyboardButton(
+                _short_task_label(tugas), callback_data=f"{prefix}|pick|{tugas['id']}"
+            )
+        )
+    return markup
 
 
 @bot.message_handler(commands=["done"])
 async def handle_done(message):
     chat_id = message.chat.id
-    raw_input = message.text[len("/done") :].strip()
+    daftar_tugas = _fetch_tasks(chat_id, None)
 
-    if not raw_input.isdigit():
-        await bot.reply_to(message, "Format salah. Contoh: /done 1")
+    if not daftar_tugas:
+        await bot.reply_to(message, "Tidak ada tugas yang bisa ditandai selesai.")
         return
-
-    nomor_tugas = int(raw_input)
-    tugas_terpilih = await _find_task_by_number(chat_id, nomor_tugas)
-
-    if tugas_terpilih is None:
-        await bot.reply_to(
-            message, f"Tugas nomor {nomor_tugas} tidak ditemukan. Cek lagi dengan /list."
-        )
-        return
-
-    supabase.table("study_tasks").update({"is_completed": True}).eq(
-        "id", tugas_terpilih["id"]
-    ).execute()
 
     await bot.reply_to(
-        message, f"🎉 Mantap! Tugas '{tugas_terpilih['task_name']}' berhasil diselesaikan."
+        message,
+        "Pilih tugas yang mau ditandai selesai:",
+        reply_markup=build_task_picker_markup(daftar_tugas, "done"),
     )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("done|"))
+async def handle_done_callback(call):
+    _, action, *rest = call.data.split("|")
+    chat_id = call.message.chat.id
+
+    if action != "pick":
+        await bot.answer_callback_query(call.id)
+        return
+
+    task_id = int(rest[0])
+    result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
+    if not result.data:
+        await bot.answer_callback_query(call.id, "Tugas tidak ditemukan, mungkin sudah dihapus.")
+        return
+
+    task_name = result.data[0]["task_name"]
+    supabase.table("study_tasks").update({"is_completed": True}).eq("id", task_id).execute()
+
+    await bot.edit_message_text(
+        f"🎉 Mantap! Tugas '{task_name}' berhasil diselesaikan.", chat_id, call.message.message_id
+    )
+    await bot.answer_callback_query(call.id)
 
 
 @bot.message_handler(commands=["del"])
 async def handle_del(message):
     chat_id = message.chat.id
-    raw_input = message.text[len("/del") :].strip()
+    daftar_tugas = _fetch_tasks(chat_id, None)
 
-    if not raw_input.isdigit():
-        await bot.reply_to(message, "Format salah. Contoh: /del 1")
+    if not daftar_tugas:
+        await bot.reply_to(message, "Tidak ada tugas yang bisa dihapus.")
         return
 
-    nomor_tugas = int(raw_input)
-    tugas_terpilih = await _find_task_by_number(chat_id, nomor_tugas)
+    await bot.reply_to(
+        message,
+        "Pilih tugas yang mau dihapus:",
+        reply_markup=build_task_picker_markup(daftar_tugas, "del"),
+    )
 
-    if tugas_terpilih is None:
-        await bot.reply_to(
-            message, f"Tugas nomor {nomor_tugas} tidak ditemukan. Cek lagi dengan /list."
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del|"))
+async def handle_del_callback(call):
+    _, action, *rest = call.data.split("|")
+    chat_id = call.message.chat.id
+
+    if action == "pick":
+        task_id = int(rest[0])
+        result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
+        if not result.data:
+            await bot.answer_callback_query(call.id, "Tugas tidak ditemukan, mungkin sudah dihapus.")
+            return
+
+        task_name = result.data[0]["task_name"]
+        confirm_markup = InlineKeyboardMarkup(row_width=2)
+        confirm_markup.row(
+            InlineKeyboardButton("Ya, hapus", callback_data=f"del|confirm|{task_id}"),
+            InlineKeyboardButton("Batal", callback_data="del|cancel"),
         )
+        await bot.edit_message_text(
+            f"Hapus tugas '{task_name}'?",
+            chat_id,
+            call.message.message_id,
+            reply_markup=confirm_markup,
+        )
+        await bot.answer_callback_query(call.id)
         return
 
-    supabase.table("study_tasks").delete().eq("id", tugas_terpilih["id"]).execute()
+    if action == "confirm":
+        task_id = int(rest[0])
+        result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
+        task_name = result.data[0]["task_name"] if result.data else "tugas ini"
+        supabase.table("study_tasks").delete().eq("id", task_id).execute()
+        await bot.edit_message_text(
+            f"Tugas '{task_name}' berhasil dihapus.", chat_id, call.message.message_id
+        )
+        await bot.answer_callback_query(call.id)
+        return
 
-    await bot.reply_to(message, f"Tugas '{tugas_terpilih['task_name']}' berhasil dihapus.")
+    if action == "cancel":
+        await bot.edit_message_text("Dibatalkan.", chat_id, call.message.message_id)
+        await bot.answer_callback_query(call.id)
+        return
+
+    await bot.answer_callback_query(call.id)
 
 
 @bot.message_handler(func=lambda message: True)
