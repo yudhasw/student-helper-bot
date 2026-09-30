@@ -82,7 +82,7 @@ def build_reminder_markup() -> InlineKeyboardMarkup:
     return markup
 
 
-def build_delete_confirm_markup(task_id: int) -> InlineKeyboardMarkup:
+def build_delete_confirm_markup(task_id: str) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup(row_width=2)
     markup.row(
         InlineKeyboardButton("Ya, hapus", callback_data=f"del|confirm|{task_id}"),

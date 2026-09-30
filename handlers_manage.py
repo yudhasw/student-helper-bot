@@ -31,7 +31,7 @@ async def handle_done_callback(call):
         await bot.answer_callback_query(call.id)
         return
 
-    task_id = int(rest[0])
+    task_id = rest[0]
     result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
     if not result.data:
         await bot.answer_callback_query(call.id, "Tugas tidak ditemukan, mungkin sudah dihapus.")
@@ -68,7 +68,7 @@ async def handle_del_callback(call):
     chat_id = call.message.chat.id
 
     if action == "pick":
-        task_id = int(rest[0])
+        task_id = rest[0]
         result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
         if not result.data:
             await bot.answer_callback_query(
@@ -87,7 +87,7 @@ async def handle_del_callback(call):
         return
 
     if action == "confirm":
-        task_id = int(rest[0])
+        task_id = rest[0]
         result = supabase.table("study_tasks").select("task_name").eq("id", task_id).execute()
         task_name = result.data[0]["task_name"] if result.data else "tugas ini"
         supabase.table("study_tasks").delete().eq("id", task_id).execute()
