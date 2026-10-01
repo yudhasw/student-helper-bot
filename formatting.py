@@ -3,7 +3,9 @@
 from datetime import datetime
 
 from bot_instance import WIB
-from tasks_repo import is_overdue
+from tasks_repo import is_overdue, is_within_current_week
+
+NAMA_HARI_LENGKAP = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
 
 SCOPE_JUDUL = {
     None: "tugas yang belum selesai",
@@ -14,17 +16,23 @@ SCOPE_JUDUL = {
 }
 
 
-def _format_deadline_short(deadline: str | None, deadline_time: str | None) -> str:
+def format_deadline_short(deadline: str | None, deadline_time: str | None) -> str:
     if not deadline:
         return "-"
-    short = deadline[5:]  # "YYYY-MM-DD" -> "MM-DD"
+
+    if is_within_current_week(deadline):
+        hari = NAMA_HARI_LENGKAP[datetime.strptime(deadline, "%Y-%m-%d").weekday()]
+        short = hari
+    else:
+        short = deadline[5:]  # "YYYY-MM-DD" -> "MM-DD"
+
     return f"{short} {deadline_time}" if deadline_time else short
 
 
 def _format_task_line(i: int, tugas: dict, scope: str | None) -> str:
     if scope == "today":
         return f"{i}. {tugas['task_name']}"
-    deadline = _format_deadline_short(tugas["deadline"], tugas.get("deadline_time"))
+    deadline = format_deadline_short(tugas["deadline"], tugas.get("deadline_time"))
     return f"{i}. {tugas['task_name']} - {deadline}"
 
 

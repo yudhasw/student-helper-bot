@@ -4,6 +4,8 @@ import calendar as calendar_module
 
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from formatting import format_deadline_short
+
 NAMA_HARI = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
 
 REMINDER_PRESETS = [
@@ -95,8 +97,8 @@ def _short_task_label(tugas: dict) -> str:
     name = tugas["task_name"]
     deadline = tugas["deadline"]
     if deadline:
-        waktu = f" {tugas['deadline_time']}" if tugas.get("deadline_time") else ""
-        label = f"{name} ({deadline[5:]}{waktu})"
+        deadline_short = format_deadline_short(deadline, tugas.get("deadline_time"))
+        label = f"{name} ({deadline_short})"
     else:
         label = name
     return label if len(label) <= 60 else label[:57] + "..."

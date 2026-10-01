@@ -30,6 +30,11 @@ def _date_range_for_scope(scope: str, now: datetime) -> tuple[str, str]:
     raise ValueError(f"scope tidak dikenal: {scope}")
 
 
+def is_within_current_week(deadline: str) -> bool:
+    start, end = _date_range_for_scope("week", datetime.now(WIB))
+    return start <= deadline <= end
+
+
 def fetch_tasks(chat_id: int, scope: str | None) -> list[dict]:
     query = (
         supabase.table("study_tasks")
