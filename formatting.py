@@ -30,10 +30,11 @@ def format_deadline_short(deadline: str | None, deadline_time: str | None) -> st
 
 
 def _format_task_line(i: int, tugas: dict, scope: str | None) -> str:
+    catatan_mark = " 📎" if tugas.get("notes") else ""
     if scope == "today":
-        return f"{i}. {tugas['task_name']}"
+        return f"{i}. {tugas['task_name']}{catatan_mark}"
     deadline = format_deadline_short(tugas["deadline"], tugas.get("deadline_time"))
-    return f"{i}. {tugas['task_name']} - {deadline}"
+    return f"{i}. {tugas['task_name']}{catatan_mark} - {deadline}"
 
 
 def format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
@@ -58,6 +59,24 @@ def format_task_list(daftar_tugas: list[dict], scope: str | None) -> str:
             lines.append("")
         lines.append("⚠️ Overdue:")
         lines += [_format_task_line(i, t, scope) for i, t in enumerate(overdue, start=1)]
+
+    return "\n".join(lines)
+
+
+def format_task_detail(tugas: dict) -> str:
+    lines = [f"📋 {tugas['task_name']}"]
+
+    if tugas["deadline"]:
+        waktu = f" {tugas['deadline_time']}" if tugas.get("deadline_time") else ""
+        lines.append(f"Deadline: {tugas['deadline']}{waktu}")
+    else:
+        lines.append("Deadline: -")
+
+    if tugas.get("remind_at"):
+        remind_wib = datetime.fromisoformat(tugas["remind_at"]).astimezone(WIB)
+        lines.append(f"Reminder: {remind_wib.strftime('%Y-%m-%d %H:%M')} WIB")
+
+    lines.append(f"Catatan:\n{tugas['notes']}" if tugas.get("notes") else "Catatan: -")
 
     return "\n".join(lines)
 

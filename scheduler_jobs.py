@@ -39,7 +39,7 @@ async def send_due_reminders() -> int:
     now_utc = datetime.now(ZoneInfo("UTC")).isoformat()
     response = (
         supabase.table("study_tasks")
-        .select("id, chat_id, task_name, deadline, deadline_time")
+        .select("id, chat_id, task_name, deadline, deadline_time, notes")
         .lte("remind_at", now_utc)
         .eq("reminder_sent", False)
         .eq("is_completed", False)
@@ -53,9 +53,11 @@ async def send_due_reminders() -> int:
             deadline_text = f" (deadline: {tugas['deadline']}{waktu})"
         else:
             deadline_text = ""
+        notes_text = f"\n📎 {tugas['notes']}" if tugas.get("notes") else ""
         try:
             await bot.send_message(
-                tugas["chat_id"], f"⏰ Pengingat: '{tugas['task_name']}'{deadline_text}"
+                tugas["chat_id"],
+                f"⏰ Pengingat: '{tugas['task_name']}'{deadline_text}{notes_text}",
             )
             supabase.table("study_tasks").update({"reminder_sent": True}).eq(
                 "id", tugas["id"]

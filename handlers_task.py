@@ -42,7 +42,10 @@ async def handle_task(message):
 
     task_name = raw_input
     supabase.table("pending_tasks").upsert(
-        {"chat_id": chat_id, "task_name": task_name}, on_conflict="chat_id"
+        # editing_task_id direset eksplisit, jaga-jaga ada sesi /edit lama yang
+        # belum selesai (kalau tidak, finalize_task bisa salah update tugas lama).
+        {"chat_id": chat_id, "task_name": task_name, "editing_task_id": None},
+        on_conflict="chat_id",
     ).execute()
 
     now = datetime.now(WIB)

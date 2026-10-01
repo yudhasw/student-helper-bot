@@ -93,6 +93,16 @@ def build_delete_confirm_markup(task_id: str) -> InlineKeyboardMarkup:
     return markup
 
 
+def build_edit_menu_markup(task_id: str) -> InlineKeyboardMarkup:
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("Lihat detail", callback_data=f"edit|detail|{task_id}"))
+    markup.add(InlineKeyboardButton("Ubah nama", callback_data=f"edit|renameprompt|{task_id}"))
+    markup.add(InlineKeyboardButton("Ubah deadline", callback_data=f"edit|deadline|{task_id}"))
+    markup.add(InlineKeyboardButton("Ubah catatan", callback_data=f"edit|noteprompt|{task_id}"))
+    markup.add(InlineKeyboardButton("Batal", callback_data="edit|cancel"))
+    return markup
+
+
 def _short_task_label(tugas: dict) -> str:
     name = tugas["task_name"]
     deadline = tugas["deadline"]

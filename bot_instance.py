@@ -27,6 +27,7 @@ BOT_COMMANDS = [
     BotCommand("overdue", "Lihat tugas yang sudah lewat deadline"),
     BotCommand("done", "Tandai tugas selesai (pilih dari daftar)"),
     BotCommand("del", "Hapus tugas (pilih dari daftar)"),
+    BotCommand("edit", "Ubah nama/deadline/catatan tugas (pilih dari daftar)"),
     BotCommand("versi", "Lihat versi bot saat ini"),
 ]
 

@@ -19,12 +19,18 @@ from config import (
 from scheduler_jobs import send_daily_digest, send_due_reminders
 
 # Import handler modules untuk efek sampingnya: mendaftarkan @bot.message_handler /
-# @bot.callback_query_handler. handlers_misc diimpor terakhir karena berisi fallback
-# "perintah tak dikenal" yang harus jadi handler paling akhir dicoba.
+# @bot.callback_query_handler. Urutan import = urutan prioritas handler (yang filter-nya
+# cocok duluan yang jalan, lihat _run_middlewares_and_handlers di pyTelegramBotAPI).
+# Semua command spesifik (/task, /list, dst, termasuk /start & /versi di handlers_misc)
+# harus terdaftar duluan, baru handlers_edit (filter "ada pending edit?" -- bisa
+# nangkep teks apapun kalau didaftarkan kedahuluan), dan handlers_fallback paling
+# akhir karena filter-nya selalu True (fallback "perintah tak dikenal").
 import handlers_list  # noqa: F401
 import handlers_task  # noqa: F401
 import handlers_manage  # noqa: F401
 import handlers_misc  # noqa: F401
+import handlers_edit  # noqa: F401
+import handlers_fallback  # noqa: F401
 
 scheduler = AsyncIOScheduler(timezone="Asia/Jakarta")
 

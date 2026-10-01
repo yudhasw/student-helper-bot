@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 
 from bot_instance import WIB, supabase
 
+MAX_NOTES_LENGTH = 1000
+
 
 def today_str() -> str:
     return datetime.now(WIB).strftime("%Y-%m-%d")
@@ -76,22 +78,53 @@ def finalize_task(
     deadline_time: str | None = None,
     remind_at_iso: str | None = None,
 ) -> str | None:
-    """Pindahkan tugas dari pending_tasks (state sementara /task) ke study_tasks."""
+    """Terapkan deadline/reminder hasil alur kalender ke pending_tasks.
+
+    Kalau pending_tasks.editing_task_id terisi, ini alur "ubah deadline" tugas
+    yang sudah ada (dari /edit) -> UPDATE baris itu. Kalau tidak, ini alur
+    /task biasa -> INSERT tugas baru.
+    """
     pending = (
-        supabase.table("pending_tasks").select("task_name").eq("chat_id", chat_id).execute()
+        supabase.table("pending_tasks")
+        .select("task_name, editing_task_id")
+        .eq("chat_id", chat_id)
+        .execute()
     )
     if not pending.data:
         return None
 
     task_name = pending.data[0]["task_name"]
-    supabase.table("study_tasks").insert(
-        {
-            "chat_id": chat_id,
-            "task_name": task_name,
-            "deadline": deadline_iso,
-            "deadline_time": deadline_time,
-            "remind_at": remind_at_iso,
-        }
-    ).execute()
+    editing_task_id = pending.data[0].get("editing_task_id")
+    payload = {
+        "deadline": deadline_iso,
+        "deadline_time": deadline_time,
+        "remind_at": remind_at_iso,
+        "reminder_sent": False,
+    }
+
+    if editing_task_id:
+        supabase.table("study_tasks").update(payload).eq("id", editing_task_id).execute()
+    else:
+        payload.update({"chat_id": chat_id, "task_name": task_name})
+        supabase.table("study_tasks").insert(payload).execute()
+
     supabase.table("pending_tasks").delete().eq("chat_id", chat_id).execute()
     return task_name
+
+
+def get_pending_edit(chat_id: int) -> dict | None:
+    """Cek apakah chat ini sedang ditunggu balasan teksnya buat /edit (ubah nama/catatan)."""
+    result = (
+        supabase.table("pending_edits").select("task_id, field").eq("chat_id", chat_id).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def start_pending_edit(chat_id: int, task_id: str, field: str) -> None:
+    supabase.table("pending_edits").upsert(
+        {"chat_id": chat_id, "task_id": task_id, "field": field}, on_conflict="chat_id"
+    ).execute()
+
+
+def clear_pending_edit(chat_id: int) -> None:
+    supabase.table("pending_edits").delete().eq("chat_id", chat_id).execute()
